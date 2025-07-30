@@ -1,8 +1,7 @@
 from src.embedding.embedder import get_embeddings
-from src.embedding.chroma_client import get_collection
+from src.embedding.faiss_client import search_faiss
 
 def retrieve(query: str, k=5):
-    col = get_collection()
-    q_emb = get_embeddings([query])
-    results = col.query(query_embeddings=q_emb, n_results=k, include=["documents","ids"])
+    q_emb = get_embeddings([query])[0]  # Get single embedding as list
+    results = search_faiss(q_emb, k)
     return results

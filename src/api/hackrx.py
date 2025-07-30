@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from src.ingestion.fetcher import download
 from src.ingestion.parser import parse_pdf, parse_docx, parse_email
 from src.utils.text_splitter import split_text
-from src.embedding.chroma_client import get_collection, persist
+from src.embedding.faiss_client import add_to_faiss, clear_faiss_index, save_faiss_index
 from src.embedding.embedder import get_embeddings
 from src.retrieval.retriever import retrieve
 from src.generation.generator import generate_answer
@@ -21,6 +21,10 @@ class Ans(BaseModel):
 @router.post("/hackrx/run", response_model=Ans)
 async def run(req: Req):
     start = time.time()
+    
+    # Clear previous index for fresh start
+    clear_faiss_index()
+    
     all_chunks = []
     for idx, url in enumerate(req.documents):
         print(f"[{time.time()-start:.1f}s] Downloading document {idx+1}: {url}")
@@ -44,16 +48,14 @@ async def run(req: Req):
     embeddings = get_embeddings(all_chunks)
     print(f"[{time.time()-start:.1f}s] Generated embeddings")
 
-    col = get_collection()
-    BATCH_SIZE = 5000  # Stay well under the 5461 limit
-    ids = [f"c{i}" for i in range(len(all_chunks))]
-    for i in range(0, len(all_chunks), BATCH_SIZE):
-        chunk = all_chunks[i : i+BATCH_SIZE]
-        emb = embeddings[i : i+BATCH_SIZE]
-        id_subset = ids[i : i+BATCH_SIZE]
-        col.add(documents=chunk, embeddings=emb, ids=id_subset)
+    # Add all embeddings and chunks to FAISS index at once
+    chunk_metadata = [{"chunk_id": i, "source": "document"} for i in range(len(all_chunks))]
+    add_to_faiss(embeddings, all_chunks, chunk_metadata)
+    print(f"[{time.time()-start:.1f}s] Indexed chunks in FAISS")
 
-    print(f"[{time.time()-start:.1f}s] Indexed chunks in ChromaDB")
+    # Save the index for persistence
+    save_faiss_index()
+    print(f"[{time.time()-start:.1f}s] Saved FAISS index")
 
     answers = []
     for q in req.questions:
