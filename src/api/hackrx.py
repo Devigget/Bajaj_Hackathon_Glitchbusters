@@ -70,3 +70,7 @@ async def run(req: Req):
 
     print(f"[{time.time()-start:.1f}s] Completed all questions")
     return Ans(answers=answers)
+
+@app.get("/")
+def read_root():
+    return {"message": "GlitchBusters HackRX API!"}
