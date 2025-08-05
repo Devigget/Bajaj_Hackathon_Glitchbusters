@@ -106,6 +106,6 @@ async def run(req: Req):
 
     return Ans(answers=answers)
 
-@app.get("/")
+@router.get("/")
 def read_root():
     return {"message": "GlitchBusters HackRX API!"}
