@@ -1,72 +1,107 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import List
+import tempfile
+import os
+
 from src.ingestion.fetcher import download
 from src.ingestion.parser import parse_pdf, parse_docx, parse_email
 from src.utils.text_splitter import split_text
-from src.embedding.faiss_client import add_to_faiss, clear_faiss_index, save_faiss_index
 from src.embedding.embedder import get_embeddings
-from src.retrieval.retriever import retrieve
+from src.retrieval.retriever import build_index, retrieve
 from src.generation.generator import generate_answer
-import time
 
 router = APIRouter()
 
 class Req(BaseModel):
-    documents: list[str]
-    questions: list[str]
+    documents: List[str]  # List of document URLs
+    questions: List[str]
 
 class Ans(BaseModel):
-    answers: list[str]
+    answers: List[str]
 
 @router.post("/hackrx/run", response_model=Ans)
 async def run(req: Req):
-    start = time.time()
-    
-    # Clear previous index for fresh start
-    clear_faiss_index()
-    
     all_chunks = []
+    chunk_metadata = []
+
+    # Process each document URL
     for idx, url in enumerate(req.documents):
-        print(f"[{time.time()-start:.1f}s] Downloading document {idx+1}: {url}")
-        path = download(url, f"temp_file_{idx}")
-        print(f"[{time.time()-start:.1f}s] Downloaded to {path}")
+        print(f"Processing document {idx+1}: {url}")
 
-        if path.endswith(".pdf"):
-            text = parse_pdf(path)
-        elif path.endswith(".docx"):
-            text = parse_docx(path)
-        else:
-            text = parse_email(path)
-        print(f"[{time.time()-start:.1f}s] Parsed document {idx+1}, length {len(text)} chars")
+        # Download document to a temporary file
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                temp_path = download(url, tmp_file.name)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to download document {url}: {e}")
 
-        chunks = split_text(text)
-        print(f"[{time.time()-start:.1f}s] Split into {len(chunks)} chunks")
-        all_chunks.extend(chunks)
+        try:
+            # Parse document text based on extension
+            if temp_path.endswith(".pdf"):
+                text = parse_pdf(temp_path)
+            elif temp_path.endswith(".docx"):
+                text = parse_docx(temp_path)
+            else:
+                # Treat as email or fallback parser
+                text = parse_email(temp_path)
 
-    print(f"[{time.time()-start:.1f}s] Total chunks: {len(all_chunks)}")
+            print(f"Extracted {len(text)} characters from document {idx+1}")
 
+            # Chunk the extracted text
+            chunks = split_text(text, chunk_size=800, chunk_overlap=100)
+            print(f"Created {len(chunks)} chunks from document {idx+1}")
+
+            # Add each chunk and its metadata
+            for chunk_idx, chunk in enumerate(chunks):
+                all_chunks.append(chunk)
+                chunk_metadata.append({
+                    "doc_url": url,
+                    "doc_index": idx,
+                    "chunk_index": chunk_idx,
+                    "chunk_id": f"doc{idx}_chunk{chunk_idx}"
+                })
+        finally:
+            # Clean up temporary file safely
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception as e:
+                    print(f"Warning: Failed to delete temp file {temp_path}: {e}")
+
+    print(f"Total chunks collected: {len(all_chunks)}")
+
+    # Generate embeddings for all chunks
+    print("Generating embeddings...")
     embeddings = get_embeddings(all_chunks)
-    print(f"[{time.time()-start:.1f}s] Generated embeddings")
+    print(f"Generated {len(embeddings)} embeddings")
 
-    # Add all embeddings and chunks to FAISS index at once
-    chunk_metadata = [{"chunk_id": i, "source": "document"} for i in range(len(all_chunks))]
-    add_to_faiss(embeddings, all_chunks, chunk_metadata)
-    print(f"[{time.time()-start:.1f}s] Indexed chunks in FAISS")
+    # Build or update FAISS index with embeddings, chunks, and metadata
+    print("Building FAISS index...")
+    build_index(embeddings, all_chunks, chunk_metadata)
 
-    # Save the index for persistence
-    save_faiss_index()
-    print(f"[{time.time()-start:.1f}s] Saved FAISS index")
-
+    # Process questions: retrieve relevant chunks and generate answers
     answers = []
-    for q in req.questions:
-        res = retrieve(q, k=5)
-        contexts = [doc for doc in res["documents"][0]]
-        print(f"[{time.time()-start:.1f}s] Retrieved top contexts for question: {q}")
+    for i, question in enumerate(req.questions):
+        print(f"\nProcessing question {i+1}: {question}")
 
-        ans = generate_answer(q, contexts)
-        print(f"[{time.time()-start:.1f}s] Generated answer")
+        # Retrieve top-k similar chunks (pass metadata too)
+        contexts = retrieve(question, k=7)
+        
+        # Log the retrieved contexts for debug
+        print("Retrieved contexts:")
+        for j, ctx in enumerate(contexts):
+            snippet = ctx['text'][:100].replace("\n", " ")  # One-line preview
+            print(f"  {j+1}. Score: {ctx['score']:.3f} - {snippet}...")
 
-        answers.append(ans)
+        # Generate answer from Gemini API
+        try:
+            answer = generate_answer(question, contexts)
+        except Exception as e:
+            answer = f"Error generating answer: {str(e)}"
+            print(answer)
 
-    print(f"[{time.time()-start:.1f}s] Completed all questions")
+        answers.append(answer)
+        print(f"Generated answer: {answer}")
+
     return Ans(answers=answers)

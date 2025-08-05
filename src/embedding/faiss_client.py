@@ -2,136 +2,81 @@ import faiss
 import numpy as np
 import pickle
 import os
-from src.config import CHROMA_PATH
 
-# Global FAISS index and storage
-_faiss_index = None
-_chunk_texts = []
-_chunk_metadata = []
-
-# Path for persisting FAISS index and data
-FAISS_INDEX_PATH = os.path.join(CHROMA_PATH, "faiss.idx")
-FAISS_DATA_PATH = os.path.join(CHROMA_PATH, "faiss_data.pkl")
-
-def initialize_faiss_index(embed_dim=384):
-    """Initialize a new FAISS index"""
-    global _faiss_index
-    _faiss_index = faiss.IndexFlatL2(embed_dim)
-    return _faiss_index
-
-def get_faiss_index():
-    """Get the current FAISS index"""
-    global _faiss_index
-    if _faiss_index is None:
-        # Try to load existing index
-        if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(FAISS_DATA_PATH):
-            load_faiss_index()
-        else:
-            # Initialize new index with default embedding dimension
-            initialize_faiss_index()
-    return _faiss_index
-
-def add_to_faiss(embeddings, chunks, metadata=None):
-    """Add embeddings and chunks to FAISS index"""
-    global _faiss_index, _chunk_texts, _chunk_metadata
+class FAISSClient:
+    def __init__(self, dimension=None):
+        self.dimension = dimension
+        self.index = None  # Initialize later when we know the dimension
+        self.chunk_texts = []
+        self.chunk_metadata = []
     
-    if _faiss_index is None:
-        embed_dim = len(embeddings[0])
-        initialize_faiss_index(embed_dim)
+    def _init_index(self, dimension):
+        """Initialize index with the correct dimension"""
+        if self.index is None:
+            self.dimension = dimension
+            self.index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
+            print(f"Initialized FAISS index with dimension: {dimension}")
     
-    # Convert embeddings to numpy array
-    emb_matrix = np.array(embeddings).astype('float32')
-    
-    # Add to FAISS index
-    _faiss_index.add(emb_matrix)
-    
-    # Store chunk texts
-    _chunk_texts.extend(chunks)
-    
-    # Store metadata if provided
-    if metadata:
-        _chunk_metadata.extend(metadata)
-    else:
-        # Create default metadata
-        _chunk_metadata.extend([{"chunk_id": len(_chunk_texts) - len(chunks) + i} for i in range(len(chunks))])
-
-def search_faiss(query_embedding, k=5):
-    """Search FAISS index for similar vectors"""
-    global _faiss_index, _chunk_texts
-    
-    if _faiss_index is None or len(_chunk_texts) == 0:
-        return {"documents": [[]], "ids": [[]]}
-    
-    # Convert query embedding to numpy array
-    query_emb = np.array([query_embedding]).astype('float32')
-    
-    # Search FAISS index
-    distances, indices = _faiss_index.search(query_emb, min(k, len(_chunk_texts)))
-    
-    # Get corresponding texts
-    retrieved_chunks = [_chunk_texts[i] for i in indices[0] if i < len(_chunk_texts)]
-    retrieved_ids = [f"c{i}" for i in indices[0] if i < len(_chunk_texts)]
-    
-    # Return in ChromaDB-compatible format
-    return {
-        "documents": [retrieved_chunks],
-        "ids": [retrieved_ids]
-    }
-
-def save_faiss_index():
-    """Save FAISS index and associated data to disk"""
-    global _faiss_index, _chunk_texts, _chunk_metadata
-    
-    if _faiss_index is not None:
-        # Create directory if it doesn't exist
-        os.makedirs(CHROMA_PATH, exist_ok=True)
+    def add_documents(self, embeddings, texts, metadata=None):
+        """Add documents to FAISS index"""
+        embeddings = np.array(embeddings).astype('float32')
         
-        # Save FAISS index
-        faiss.write_index(_faiss_index, FAISS_INDEX_PATH)
+        # Auto-detect dimension from first embedding
+        if self.index is None:
+            self._init_index(embeddings.shape[1])
         
-        # Save chunk texts and metadata
-        with open(FAISS_DATA_PATH, 'wb') as f:
-            pickle.dump({
-                'chunk_texts': _chunk_texts,
-                'chunk_metadata': _chunk_metadata
-            }, f)
-
-def load_faiss_index():
-    """Load FAISS index and associated data from disk"""
-    global _faiss_index, _chunk_texts, _chunk_metadata
-    
-    if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(FAISS_DATA_PATH):
-        # Load FAISS index
-        _faiss_index = faiss.read_index(FAISS_INDEX_PATH)
+        # Verify dimension matches
+        if embeddings.shape[1] != self.dimension:
+            raise ValueError(f"Embedding dimension {embeddings.shape[1]} doesn't match index dimension {self.dimension}")
         
-        # Load chunk texts and metadata
-        with open(FAISS_DATA_PATH, 'rb') as f:
-            data = pickle.load(f)
-            _chunk_texts = data['chunk_texts']
-            _chunk_metadata = data['chunk_metadata']
-
-def clear_faiss_index():
-    """Clear the current FAISS index and data"""
-    global _faiss_index, _chunk_texts, _chunk_metadata
+        # Normalize embeddings for cosine similarity
+        faiss.normalize_L2(embeddings)
+        
+        self.index.add(embeddings)
+        self.chunk_texts.extend(texts)
+        if metadata:
+            self.chunk_metadata.extend(metadata)
+        
+        print(f"Added {len(embeddings)} embeddings to FAISS index")
     
-    _faiss_index = None
-    _chunk_texts = []
-    _chunk_metadata = []
+    def search(self, query_embedding, k=5):
+        """Search for similar documents"""
+        if self.index is None:
+            return []
+            
+        query_embedding = np.array(query_embedding).astype('float32').reshape(1, -1)
+        faiss.normalize_L2(query_embedding)
+        
+        scores, indices = self.index.search(query_embedding, k)
+        
+        results = []
+        for i, idx in enumerate(indices[0]):
+            if idx < len(self.chunk_texts):  # Valid index
+                results.append({
+                    "text": self.chunk_texts[idx],
+                    "score": float(scores[0][i]),
+                    "metadata": self.chunk_metadata[idx] if self.chunk_metadata else None
+                })
+        
+        return results
     
-    # Remove saved files
-    if os.path.exists(FAISS_INDEX_PATH):
-        os.remove(FAISS_INDEX_PATH)
-    if os.path.exists(FAISS_DATA_PATH):
-        os.remove(FAISS_DATA_PATH)
-
-def get_index_stats():
-    """Get statistics about the current index"""
-    global _faiss_index, _chunk_texts
+    def save(self, filepath):
+        """Save index and metadata"""
+        if self.index is not None:
+            faiss.write_index(self.index, f"{filepath}.faiss")
+            with open(f"{filepath}.pkl", "wb") as f:
+                pickle.dump({
+                    "dimension": self.dimension,
+                    "chunk_texts": self.chunk_texts,
+                    "chunk_metadata": self.chunk_metadata
+                }, f)
     
-    if _faiss_index is None:
-        return {"total_vectors": 0, "total_chunks": 0}
-    
-    return {
-        "total_vectors": _faiss_index.ntotal,
-        "total_chunks": len(_chunk_texts)
-    }
+    def load(self, filepath):
+        """Load index and metadata"""
+        if os.path.exists(f"{filepath}.faiss"):
+            self.index = faiss.read_index(f"{filepath}.faiss")
+            with open(f"{filepath}.pkl", "rb") as f:
+                data = pickle.load(f)
+                self.dimension = data.get("dimension")
+                self.chunk_texts = data["chunk_texts"]
+                self.chunk_metadata = data["chunk_metadata"]
