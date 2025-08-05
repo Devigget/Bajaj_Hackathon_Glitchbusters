@@ -105,3 +105,7 @@ async def run(req: Req):
         print(f"Generated answer: {answer}")
 
     return Ans(answers=answers)
+
+@app.get("/")
+def read_root():
+    return {"message": "GlitchBusters HackRX API!"}
