@@ -1,0 +1,23 @@
+{
+  "documents": [
+    "https://example.com/investigation_procedures.pdf",
+    "https://example.com/evidence_collection_manual.pdf"
+  ],
+  "case": {
+    "title": "Sexual Assault Case",
+    "FIRNo": "FIR008",
+    "FI_book_no": "FI-2025-009",
+    "date_time": "2025-09-20T10:30:00Z",
+    "place": "Mapusa Market, Goa",
+    "offence": "Sexual Assault",
+    "action_time_frame": "48",
+    "visited_places": "Crime scene, Victim House",
+    "record": "Initial investigation started, evidence being collected",
+    "modusOperandi": "The person is left handed",
+    "weapon": "knife",
+    "officer_id": "68cd838fc8a4557439f42c88",
+    "status": true,
+    "createdAt": "2025-09-21T03:30:30.209+00:00",
+    "updatedAt": "2025-09-21T06:26:38.291+00:00"
+  }
+}

@@ -11,8 +11,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Bajaj Hackathon - Document RAG API",
-    description="RAG API for document processing and question answering",
+    title="GP Hackathon - SOP steps generation",
+    description="RAG API for steps generation",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -31,8 +31,8 @@ app.include_router(router, tags=["RAG"])
 
 @app.get("/")
 async def root():
-    return {"message": "Bajaj Hackathon RAG API is running!", "status": "active"}
+    return {"message": "GP Hackathon API is running!", "status": "active"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "document-rag-api"}
+    return {"status": "healthy", "service": "sop-steps-generation-api"}
